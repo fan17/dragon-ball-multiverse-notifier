@@ -1,29 +1,34 @@
 var axios = require('axios');
 var cheerio = require('cheerio');
 var aws = require('aws-sdk');
+var s3 = new aws.S3();
 
 const S3_BUCKET_NAME = 'dragon-ball-multiverse-notifier';
 const S3_FILE_NAME = 'last-call.json';
 const SEND_MAIL_FUNCTION_NAME = 'dragon-ball-multiverse-new-page-send-email-notification';
 const WEBSITE_ADDRESS = 'http://www.dragonball-multiverse.com';
 
-var s3 = new aws.S3();
-
 exports.handler = async (event) => {
-    log('START');   
-    let lastLink = await getLastLink();
+    log('START');
+    let lastSavedPage = await getLastSavedPage();
     
-    if (await newPageExists(lastLink)) {
-        const newPageLink = await getNextPageLink(lastLink);
+    if (await newPageExists(lastSavedPage)) {
+        const newPageLink = await getNextPageLink(lastSavedPage);
         callEmailNotification(newPageLink);
-        await updateLastCall(newPageLink);
-    } else {
-        log('There is not any new page.');
     }
+
+    try {
+        const lastPage = await getLastPage(lastSavedPage);
+        if (lastPage != lastSavedPage) {
+            await saveS3(lastPage);
+        }
+    } catch (e) {
+    }
+
     log('FINISH');
 };
 
-function getLastLink() {
+function getLastSavedPage() {
     return new Promise((resolve,reject) => {
         s3.getObject({
             Bucket: S3_BUCKET_NAME,
@@ -43,7 +48,7 @@ async function newPageExists(link) {
         await getNextPageLink(link);
         return true;
     } catch (e) {
-        return false;   
+        return false;
     }
 }
 
@@ -55,7 +60,7 @@ function getNextPageLink(link) {
                 const $ = cheerio.load(response.data);
                 const nextPageLink = $('.navigation a[rel="next"]').first().attr('href');
                 if (typeof nextPageLink === 'undefined') {
-                    throw 'Error';
+                    throw 'There is not next page';
                 }
                 return  WEBSITE_ADDRESS + nextPageLink;
             }
@@ -64,7 +69,7 @@ function getNextPageLink(link) {
         });
 }
 
-function getLastPageLink(link) {
+function getLastPage(link) {
     return axios
         .get(link)
         .then((response) => {
@@ -72,22 +77,13 @@ function getLastPageLink(link) {
                 const $ = cheerio.load(response.data);
                 const lastPageLink = $('.navigation a[rel="last"]').first().attr('href');
                 if (typeof lastPageLink === 'undefined') {
-                    throw 'Error';
+                    throw 'There is not last page';
                 }
                 return  WEBSITE_ADDRESS + lastPageLink;
             }
         }, (error) => {
             throw 'Error';
         });
-}
-
-async function updateLastCall(link) {
-    try {
-        let lastPageLink = await getLastPageLink(link);    
-        await saveS3(lastPageLink);
-    } catch (e) {
-        log('Error: ' + e);
-    }
 }
 
 function saveS3(link) {
@@ -108,7 +104,7 @@ function saveS3(link) {
 }
 
 function callEmailNotification(link) {
-    var lambda = new aws.Lambda();     
+    var lambda = new aws.Lambda();
     var params = {
       FunctionName: SEND_MAIL_FUNCTION_NAME, 
       InvocationType: "Event", 
